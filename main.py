@@ -3,7 +3,7 @@
 """
 PacketShadow - Network Device Scanner
 Advanced Network Reconnaissance Tool
-Versión: 2.1
+Versión: 2.2
 """
 
 import os
@@ -566,18 +566,17 @@ def main():
                             scanner.scan_network_range(network_range)
                             scanner.display_results()
                             
-                            # Preguntar si desea desconectar un dispositivo
+                            # Preguntar si desea desconectar dispositivos
                             confirm_deauth = input("\n¿Quieres desconectar algún dispositivo? (s/N): ").lower()
                             if confirm_deauth in ['s', 'si', 'y', 'yes']:
-                                target_ip = input("Ingresa la IP del dispositivo a desconectar: ").strip()
-                                if target_ip:
-                                    try:
-                                        ipaddress.IPv4Address(target_ip)
-                                        interface = input("Ingresa la interfaz de red (e.g., wlan0 o Wi-Fi): ").strip()
-                                        deauth_device(target_ip, interface, scanner)
-                                    except ValueError:
-                                        print_colored("⚠️ Formato de IP inválido", "31")
-                                        
+                                target_ips_input = input("Ingresa las IPs de los dispositivos a desconectar (separadas por comas): ").strip()
+                                target_ips = [ip.strip() for ip in target_ips_input.split(',') if ip.strip()]
+                                if target_ips:
+                                    interface = input("Ingresa la interfaz de red (e.g., wlan0 o Wi-Fi): ").strip()
+                                    deauth_device(target_ips, interface, scanner)
+                                else:
+                                    print_colored("⚠️ No se especificaron IPs válidas", "31")
+                                    
                         except ValueError as e:
                             print_colored(f"⚠️ Formato de red inválido: {e}", "31")
                     else:
@@ -601,7 +600,7 @@ def main():
                                 confirm_deauth = input("\n¿Quieres desconectar este dispositivo? (s/N): ").lower()
                                 if confirm_deauth in ['s', 'si', 'y', 'yes']:
                                     interface = input("Ingresa la interfaz de red (e.g., wlan0 o Wi-Fi): ").strip()
-                                    deauth_device(ip, interface, scanner)
+                                    deauth_device([ip], interface, scanner)
                             else:
                                 print_colored(f"⚠️ Host {ip} no está activo o no es accesible", "31")
                                 
@@ -616,17 +615,16 @@ def main():
                         print_colored("\nMostrando últimos resultados...", "36")
                         scanner.display_results()
                         
-                        # Preguntar si desea desconectar un dispositivo
+                        # Preguntar si desea desconectar dispositivos
                         confirm_deauth = input("\n¿Quieres desconectar algún dispositivo? (s/N): ").lower()
                         if confirm_deauth in ['s', 'si', 'y', 'yes']:
-                            target_ip = input("Ingresa la IP del dispositivo a desconectar: ").strip()
-                            if target_ip:
-                                try:
-                                    ipaddress.IPv4Address(target_ip)
-                                    interface = input("Ingresa la interfaz de red (e.g., wlan0 o Wi-Fi): ").strip()
-                                    deauth_device(target_ip, interface, scanner)
-                                except ValueError:
-                                    print_colored("⚠️ Formato de IP inválido", "31")
+                            target_ips_input = input("Ingresa las IPs de los dispositivos a desconectar (separadas por comas): ").strip()
+                            target_ips = [ip.strip() for ip in target_ips_input.split(',') if ip.strip()]
+                            if target_ips:
+                                interface = input("Ingresa la interfaz de red (e.g., wlan0 o Wi-Fi): ").strip()
+                                deauth_device(target_ips, interface, scanner)
+                            else:
+                                print_colored("⚠️ No se especificaron IPs válidas", "31")
                     else:
                         print_colored("\n⚠️ No hay resultados previos", "31")
                         print_colored("💡 Realiza un escaneo primero usando las opciones 1 o 2", "33")
@@ -690,4 +688,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
